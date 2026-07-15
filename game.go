@@ -149,16 +149,18 @@ type Game struct {
 
 	ptr pointer // this frame's pointer, mouse or finger; see pointer.go
 
-	profileIdx  int     // index into profiles for Tab-cycling presets
-	nacaCode    string  // active NACA 4-digit code (any code, not just a preset)
-	nacaInput   string  // NACA code being typed in the toolbar field
-	alphaDeg    float64 // angle of attack in degrees
-	u0          float64
-	controlDeg  float64 // live deflection of the scene's Control object, in degrees
-	mode        fieldMode
-	paused      bool
-	streamlines bool // overlay integrated streamlines
-	glow        bool // additive bloom on the smoke
+	profileIdx      int     // index into profiles for Tab-cycling presets
+	nacaCode        string  // active NACA 4-digit code (any code, not just a preset)
+	nacaInput       string  // NACA code being typed in the toolbar field
+	alphaDeg        float64 // angle of attack in degrees
+	u0              float64
+	controlDeg      float64 // live deflection of the scene's Control object, in degrees
+	mode            fieldMode
+	paused          bool
+	streamlines     bool        // overlay integrated streamlines
+	streamlinePath  vector.Path // cached integration, rebuilt every streamlineEvery frames
+	streamlineFrame int         // Draw() calls since the last streamline rebuild
+	glow            bool        // additive bloom on the smoke
 	// clean hides every panel/control, drawing only the flow image -- exactly
 	// what -hidecontrols has always meant, on its own. kiosk adds the rest of
 	// kiosk mode on top of that: a trimmed menu bar and blocking
@@ -1202,11 +1204,35 @@ func (g *Game) drawSmoke(dst *ebiten.Image) {
 	}
 }
 
+// streamlineEvery is how many Draw() calls elapse between streamline
+// re-integrations. The integration is CPU work proportional to nLines *
+// maxSteps that has to run on the main thread every time it happens, so on
+// slower hardware doing it every frame competes with everything else Draw
+// does; the flow only changes gradually, so re-running it a few times a
+// second instead of 60 times a second is not visible but is much cheaper.
+const streamlineEvery = 3
+
 // drawStreamlines overlays instantaneous streamlines, integrated from a column
 // of seeds near the inlet by stepping a fixed arc length along the local
 // velocity (RK2 midpoint). The whole set is one batched path, so it is a single
-// draw call regardless of length.
+// draw call regardless of length. The integration itself only reruns every
+// streamlineEvery frames (see streamlinePath); every other frame just redraws
+// the cached path.
 func (g *Game) drawStreamlines(dst *ebiten.Image) {
+	if g.streamlineFrame%streamlineEvery == 0 {
+		g.streamlinePath = g.integrateStreamlines()
+	}
+	g.streamlineFrame++
+
+	op := &vector.StrokeOptions{Width: 1, LineJoin: vector.LineJoinBevel}
+	dop := &vector.DrawPathOptions{AntiAlias: false}
+	dop.ColorScale.ScaleWithColor(color.RGBA{0xde, 0xe8, 0xff, 0xc0})
+	vector.StrokePath(dst, &g.streamlinePath, op, dop)
+}
+
+// integrateStreamlines runs the actual RK2 particle integration; see
+// drawStreamlines for why this is not called every frame.
+func (g *Game) integrateStreamlines() vector.Path {
 	const nLines = 28
 	const maxSteps = 400
 	const ds = 1.5 // grid cells advanced per step
@@ -1241,10 +1267,7 @@ func (g *Game) drawStreamlines(dst *ebiten.Image) {
 			path.LineTo(lx, ly)
 		}
 	}
-	op := &vector.StrokeOptions{Width: 1, LineJoin: vector.LineJoinRound}
-	dop := &vector.DrawPathOptions{AntiAlias: true}
-	dop.ColorScale.ScaleWithColor(color.RGBA{0xde, 0xe8, 0xff, 0xc0})
-	vector.StrokePath(dst, &path, op, dop)
+	return path
 }
 
 // gridToScreen maps a grid-space point (y up) to viewport pixels (y down).
