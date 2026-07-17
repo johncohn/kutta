@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/crgimenes/glaze/menu"
 	ui "github.com/crgimenes/minigui"
@@ -148,6 +150,12 @@ type Game struct {
 	smoke *viz.Particles
 
 	ptr pointer // this frame's pointer, mouse or finger; see pointer.go
+
+	// perfLogAt is temporary Pi performance-debugging instrumentation: it
+	// throttles a TPS/FPS printout to once every couple of seconds so we can
+	// tell a solver (TPS) bottleneck from a rendering (FPS) one from the
+	// terminal, without needing a profiler on the device itself.
+	perfLogAt time.Time
 
 	profileIdx      int     // index into profiles for Tab-cycling presets
 	nacaCode        string  // active NACA 4-digit code (any code, not just a preset)
@@ -613,6 +621,10 @@ func (g *Game) Update() error {
 		}
 	}
 	g.ptr.sample()
+	if now := time.Now(); now.Sub(g.perfLogAt) >= 2*time.Second {
+		g.perfLogAt = now
+		log.Printf("perf: tps=%.1f fps=%.1f substeps=%d", ebiten.ActualTPS(), ebiten.ActualFPS(), substeps)
+	}
 	g.syncMenu()
 	g.drainPending()
 	g.handleDroppedFiles()
