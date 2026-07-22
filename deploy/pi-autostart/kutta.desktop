@@ -2,6 +2,6 @@
 Type=Application
 Name=Kutta Wind Tunnel
 Comment=Launches the kutta wind-tunnel exhibit display on login
-Exec=__KUTTA_DIR__/kutta -scene __KUTTA_DIR__/examples/planewing.afoil
+Exec=__KUTTA_DIR__/kutta -scene __KUTTA_DIR__/examples/planewing.afoil -kiosk -kiosk-controls -udp 239.192.1.1:9000
 Path=__KUTTA_DIR__
 X-GNOME-Autostart-enabled=true
