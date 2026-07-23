@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"math"
 	"path/filepath"
+	"slices"
 
 	ui "github.com/crgimenes/minigui"
 	"github.com/hajimehoshi/ebiten/v2"
@@ -115,7 +116,9 @@ func (g *Game) toggleEdit() {
 		return
 	}
 	if g.scn == nil {
-		out := g.placedOutline()
+		// A copy, not the placedOutline cache itself: the editor mutates
+		// Shape in place, and the cache must stay pristine.
+		out := slices.Clone(g.placedOutline())
 		g.scn = &scene.Scene{Objects: []*scene.Object{{Name: "airfoil", Shape: out, Pivot: centroid(out)}}}
 		g.scenePath = "(from foil)"
 	}
@@ -1009,11 +1012,11 @@ func deleteVertexBreak(o *scene.Object, i int) {
 		if hasH {
 			nh = append(nh, o.Handle[k])
 		}
+		gap := og[k]
 		if k == prev {
-			ng = append(ng, true) // the merged edge becomes the new gap
-		} else {
-			ng = append(ng, og[k])
+			gap = true // the merged edge becomes the new gap
 		}
+		ng = append(ng, gap)
 	}
 	o.Shape = ns
 	o.Handle = nh
