@@ -52,7 +52,11 @@ type Solver struct {
 	omega float64 // BGK relaxation rate, 1/tau
 	u0    float64 // free-stream speed in lattice units, along +x
 
-	f, ftmp [9][]float64 // distribution functions, double-buffered for streaming
+	// Populations are float32 to halve the solver's memory footprint and traffic;
+	// the kernel is memory-bound, so this is the lever, not more arithmetic. All
+	// math is still done in float64 (promote on read, demote on write), so only
+	// storage precision drops. Macroscopic fields stay float64 for the API.
+	f, ftmp [9][]float32 // distribution functions, double-buffered for streaming
 	solid   []bool       // true where a cell is part of the body (wall)
 
 	// Macroscopic fields, refreshed every Step and indexed y*NX+x. Exposed for
@@ -81,6 +85,9 @@ type Solver struct {
 	// grid once while still emitting the list in j-major order. An animated
 	// scene rebuilds every frame, so the scan count matters.
 	faceBins [4][]face
+
+	// rings is the fused kernel's per-worker row window; see fused.go.
+	rings [][]float32
 }
 
 // face is one exposed body face: a fluid cell whose axial neighbor is solid.
@@ -106,8 +113,8 @@ func New(nx, ny int, tau, u0 float64) *Solver {
 		Uy:    make([]float64, nx*ny),
 	}
 	for i := range 9 {
-		s.f[i] = make([]float64, nx*ny)
-		s.ftmp[i] = make([]float64, nx*ny)
+		s.f[i] = make([]float32, nx*ny)
+		s.ftmp[i] = make([]float32, nx*ny)
 	}
 	s.Reset()
 	return s
@@ -121,7 +128,7 @@ func (s *Solver) Reset() {
 		s.Ux[c] = s.u0
 		s.Uy[c] = 0
 		for i := range 9 {
-			s.f[i][c] = feq(i, 1, s.u0, 0)
+			s.f[i][c] = float32(feq(i, 1, s.u0, 0))
 		}
 	}
 }
@@ -144,7 +151,7 @@ func (s *Solver) UpdateSolid(mask []bool) {
 	for c := range mask {
 		if s.solid[c] && !mask[c] {
 			for i := range 9 {
-				s.f[i][c] = feq(i, 1, s.u0, 0)
+				s.f[i][c] = float32(feq(i, 1, s.u0, 0))
 			}
 		}
 		s.solid[c] = mask[c]
@@ -192,34 +199,56 @@ func feq(i int, rho, ux, uy float64) float64 {
 // Step advances the simulation by one lattice time unit: collide, apply the
 // open-channel boundaries, tally the wall force, then stream with bounce-back.
 func (s *Solver) Step() {
-	s.collide()
-	s.applyBoundaries()
-	s.computeForce()
-	s.stream()
-	s.f, s.ftmp = s.ftmp, s.f
+	s.StepN(1)
+}
+
+// StepN advances n lattice time units.
+//
+// Only the last of the n steps materializes the macroscopic fields and the
+// wall forces. Nothing outside the solver can observe the intermediate values:
+// Fx/Fy/Mz/Sep are overwritten by the next step, and Rho/Ux/Uy are read by the
+// renderer and the tracers only after the whole batch is done. Writing three
+// full-grid fields per substep is therefore pure memory traffic, and on a
+// memory-bound kernel traffic is the cost.
+func (s *Solver) StepN(n int) {
+	for i := range n {
+		last := i == n-1
+		s.stepOnce(last)
+		if last {
+			s.computeForce()
+		}
+		s.f, s.ftmp = s.ftmp, s.f
+	}
 }
 
 // collide relaxes every fluid cell toward local equilibrium (BGK) and refreshes
 // the macroscopic fields in place. Solid cells are skipped and report no flow.
-func (s *Solver) collide() {
+//
+// This phase and the two that follow it are the browser build's step (see
+// step_js.go) and the reference the fused kernel is tested against, so a
+// deadcode run over a native build reports them unreachable. They are not.
+func (s *Solver) collide(store bool) {
 	s.forRows(s.NY, func(y0, y1 int) {
-		s.collideRange(y0*s.NX, y1*s.NX)
+		s.collideRange(y0*s.NX, y1*s.NX, store)
 	})
 }
 
 // collideRange is collide over the cell range [c0, c1), the unit forRows
-// hands to each worker.
-func (s *Solver) collideRange(c0, c1 int) {
+// hands to each worker. store says whether to publish the macroscopic fields;
+// see StepN for why an intermediate substep skips them.
+func (s *Solver) collideRange(c0, c1 int, store bool) {
 	for c := c0; c < c1; c++ {
 		if s.solid[c] {
-			s.Rho[c], s.Ux[c], s.Uy[c] = 1, 0, 0
+			if store {
+				s.Rho[c], s.Ux[c], s.Uy[c] = 1, 0, 0
+			}
 			continue
 		}
 		rho := 0.0
 		mx := 0.0
 		my := 0.0
 		for i := range 9 {
-			fi := s.f[i][c]
+			fi := float64(s.f[i][c])
 			rho += fi
 			mx += fi * exf[i]
 			my += fi * eyf[i]
@@ -244,7 +273,9 @@ func (s *Solver) collideRange(c0, c1 int) {
 			ux *= k
 			uy *= k
 		}
-		s.Rho[c], s.Ux[c], s.Uy[c] = rho, ux, uy
+		if store {
+			s.Rho[c], s.Ux[c], s.Uy[c] = rho, ux, uy
+		}
 		// The equilibrium's 1 - 1.5*u^2 term is the same for all nine
 		// directions, so it is computed once here instead of inside feq nine
 		// times. Same math, fewer multiplies; forces stay within the physics
@@ -253,7 +284,8 @@ func (s *Solver) collideRange(c0, c1 int) {
 		wrho := rho * s.omega
 		for i := range 9 {
 			cu := exf[i]*ux + eyf[i]*uy
-			s.f[i][c] += wrho*w[i]*(base+3*cu+4.5*cu*cu) - s.omega*s.f[i][c]
+			fi := float64(s.f[i][c])
+			s.f[i][c] = float32(fi + wrho*w[i]*(base+3*cu+4.5*cu*cu) - s.omega*fi)
 		}
 	}
 }
@@ -265,9 +297,9 @@ func (s *Solver) applyBoundaries() {
 	nx, ny := s.NX, s.NY
 	// Every free-stream boundary cell gets the same nine equilibrium values,
 	// so they are computed once per call instead of once per cell.
-	var eq [9]float64
+	var eq [9]float32
 	for i := range 9 {
-		eq[i] = feq(i, 1, s.u0, 0)
+		eq[i] = float32(feq(i, 1, s.u0, 0))
 	}
 	for y := range ny {
 		c := y * nx
