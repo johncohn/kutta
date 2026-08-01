@@ -54,3 +54,6 @@ TODO.md
 # Working notes for issue/PR drafts, not part of the project
 /pr-drafts/
 
+# ESP32 knob controller firmware: real WiFi credentials, never committed
+deploy/esp32_knob_controller/wifi_secrets.h
+
