@@ -23,8 +23,10 @@ import (
 // parses as a multicast IP.
 //
 // Channels: AOA, SPD and CTRL (angle of attack, inlet speed, control-surface
-// deflection in degrees; all numeric), GLOW, STREAMLINES and PARTICLES (0 or
-// 1), and MODE (speed, vorticity, or pressure).
+// deflection in degrees; all numeric), GLOW, STREAMLINES, PARTICLES and LABEL
+// (0 or 1), MODE (speed, vorticity, or pressure), and DEMO (seconds of no
+// real input before the sim gently wanders on its own; 0 disables it),
+// mirroring the -demo flag exactly.
 func (g *Game) startUDPControl(addr string) error {
 	conn, err := listenUDPControl(addr)
 	if err != nil {
@@ -137,6 +139,29 @@ func (g *Game) applyControlMessage(line string) {
 			return
 		}
 		g.enqueue(func() { g.showParticles = on != 0 })
+	case "LABEL":
+		on, perr := strconv.ParseFloat(value, 64)
+		if perr != nil {
+			log.Printf("kutta: UDP control: LABEL wants 0 or 1, got %q", value)
+			return
+		}
+		g.enqueue(func() { g.showLabel = on != 0 })
+	case "DEMO":
+		v, perr := strconv.ParseFloat(value, 64)
+		if perr != nil {
+			log.Printf("kutta: UDP control: DEMO wants a number of seconds (0 disables), got %q", value)
+			return
+		}
+		g.enqueue(func() {
+			g.demoIdleSec = v
+			if v <= 0 {
+				// Hand control back immediately rather than freezing mid-wander:
+				// updateDemo skips everything once demoIdleSec <= 0, so without
+				// this it wouldn't apply further changes but also wouldn't clear
+				// the flag it's using to track that state.
+				g.demoActive = false
+			}
+		})
 	case "MODE":
 		fm, fok := parseFieldMode(value)
 		if !fok {

@@ -102,6 +102,32 @@ func TestApplyControlMessageTogglesAndMode(t *testing.T) {
 		t.Errorf("CTRL 999: controlDeg = %v, want clamped to %v", g.controlDeg, controlLimit)
 	}
 
+	g.applyControlMessage("LABEL 1")
+	g.drainPending()
+	if !g.showLabel {
+		t.Error("LABEL 1 should turn the legend on")
+	}
+	g.applyControlMessage("LABEL 0")
+	g.drainPending()
+	if g.showLabel {
+		t.Error("LABEL 0 should turn the legend off")
+	}
+
+	g.applyControlMessage("DEMO 45")
+	g.drainPending()
+	if g.demoIdleSec != 45 {
+		t.Errorf("DEMO 45: demoIdleSec = %v, want 45", g.demoIdleSec)
+	}
+	g.demoActive = true // simulate an in-progress wander
+	g.applyControlMessage("DEMO 0")
+	g.drainPending()
+	if g.demoIdleSec != 0 {
+		t.Errorf("DEMO 0: demoIdleSec = %v, want 0", g.demoIdleSec)
+	}
+	if g.demoActive {
+		t.Error("DEMO 0 should hand control back immediately, not freeze mid-wander")
+	}
+
 	g.applyControlMessage("MODE pressure")
 	g.drainPending()
 	if g.mode != modePressure {

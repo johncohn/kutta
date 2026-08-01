@@ -5,11 +5,13 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/crgimenes/glaze/menu"
 	ui "github.com/crgimenes/minigui"
@@ -197,6 +199,28 @@ type Game struct {
 	kiosk         bool
 	kioskControls bool
 
+	// showLabel overlays a compact legend (mode, colorbar, calculated and
+	// user-set values) in the lower-right of the flow viewport -- unlike the
+	// side panel, it still shows in kiosk/clean mode, since that's the only
+	// place an unattended exhibit display can read these values at all.
+	showLabel bool
+
+	// Demo mode: after demoIdleSec of no real change to speed/AoA/control (via
+	// setSpeed/setAlpha/setControl -- the same choke points sliders, keyboard
+	// and UDP already go through), the sim gently wanders those three on its
+	// own until any real input arrives again. demoIdleSec <= 0 disables the
+	// feature entirely. applyingDemo distinguishes the demo driver's own calls
+	// to those setters from real input, so it doesn't reset its own idle timer
+	// or immediately cancel itself.
+	demoIdleSec     float64
+	demoActive      bool
+	applyingDemo    bool
+	lastUserInput   time.Time
+	demoNextRetime  time.Time
+	demoTargetSpeed float64
+	demoTargetAoa   float64
+	demoTargetCtrl  float64
+
 	// startFullscreen defers the -fullscreen flag until a few frames have been
 	// drawn: entering fullscreen during startup blanks the screen on macOS (it
 	// stays black until a resize), while toggling after launch works. The
@@ -336,6 +360,7 @@ func NewGame() *Game {
 		showParticles: true,
 		nacaCode:      profiles[0],
 		nacaInput:     profiles[0],
+		lastUserInput: time.Now(),
 	}
 	g.sim = lbm.New(gridW, gridH, tau, g.u0)
 	g.smoke = viz.NewParticles(nParticles, gridW, gridH, 1)
@@ -514,10 +539,58 @@ func (g *Game) controlObject() *scene.Object {
 // re-applying immediately so it moves even while the timeline is paused.
 func (g *Game) setControl(deg float64) {
 	g.controlDeg = math.Max(-controlLimit, math.Min(controlLimit, deg))
+	g.noteUserInput()
 	if g.scn == nil {
 		return
 	}
 	g.sim.UpdateSolid(g.sceneMask(g.scn.LoopTime(g.animTime)))
+}
+
+// noteUserInput marks real user activity on speed/AoA/control -- called from
+// their shared setters, so it sees every caller (sliders, keyboard, UDP)
+// automatically. It's a no-op while the demo driver itself is the one calling
+// those setters, so demo mode doesn't reset its own idle clock or instantly
+// cancel itself; any real caller immediately drops out of demo mode.
+func (g *Game) noteUserInput() {
+	if g.applyingDemo {
+		return
+	}
+	g.lastUserInput = time.Now()
+	g.demoActive = false
+}
+
+// updateDemo drives the idle-triggered wander: once demoIdleSec elapses with
+// no real input, it picks a new random (but valid) target for speed/AoA/
+// control every few seconds and eases the live value a fraction of the way
+// there each tick, so the motion reads as a gentle drift rather than a jump.
+// Any real input (via noteUserInput, called from the same setters this uses)
+// cancels demoActive immediately, handing control back.
+func (g *Game) updateDemo() {
+	if g.demoIdleSec <= 0 {
+		return
+	}
+	if !g.demoActive {
+		idleFor := time.Since(g.lastUserInput)
+		if idleFor < time.Duration(g.demoIdleSec*float64(time.Second)) {
+			return
+		}
+		g.demoActive = true
+		g.demoNextRetime = time.Time{} // force an immediate retarget below
+	}
+
+	if time.Now().After(g.demoNextRetime) {
+		g.demoTargetSpeed = spdMin + rand.Float64()*(spdMax-spdMin)
+		g.demoTargetAoa = -20 + rand.Float64()*40
+		g.demoTargetCtrl = -controlLimit + rand.Float64()*(2*controlLimit)
+		g.demoNextRetime = time.Now().Add(time.Duration(5+rand.IntN(4)) * time.Second)
+	}
+
+	const drift = 0.01 // fraction of the remaining distance to target, per tick
+	g.applyingDemo = true
+	g.setSpeed(g.u0 + (g.demoTargetSpeed-g.u0)*drift)
+	g.setAlpha(g.alphaDeg + (g.demoTargetAoa-g.alphaDeg)*drift)
+	g.setControl(g.controlDeg + (g.demoTargetCtrl-g.controlDeg)*drift)
+	g.applyingDemo = false
 }
 
 // Update steps the simulation and handles input.
@@ -634,6 +707,7 @@ func (g *Game) menuItems() []menu.Item {
 			{Title: mark(g.streamlines) + "Streamlines", OnClick: act(func() { g.streamlines = !g.streamlines })},
 			{Title: mark(g.glow) + "Glow", OnClick: act(func() { g.glow = !g.glow })},
 			{Title: mark(g.showParticles) + "Particles", OnClick: act(func() { g.showParticles = !g.showParticles })},
+			{Title: mark(g.showLabel) + "Label", OnClick: act(func() { g.showLabel = !g.showLabel })},
 			{Title: mark(g.paused) + "Pause", OnClick: act(func() { g.paused = !g.paused })},
 			{Separator: true},
 			{Title: "Enter Kiosk Mode", OnClick: act(func() { g.enterKiosk(false) })},
@@ -656,6 +730,7 @@ type menuSig struct {
 	streamlines   bool
 	glow          bool
 	showParticles bool
+	showLabel     bool
 	paused        bool
 	snapOn        bool
 	nacaCode      string
@@ -677,6 +752,7 @@ func (g *Game) menuSignature() menuSig {
 		streamlines:   g.streamlines,
 		glow:          g.glow,
 		showParticles: g.showParticles,
+		showLabel:     g.showLabel,
 		paused:        g.paused,
 		snapOn:        g.snapOn,
 		nacaCode:      g.nacaCode,
@@ -748,6 +824,7 @@ func (g *Game) Update() error {
 		return nil
 	}
 	g.handleInput()
+	g.updateDemo()
 	if g.paused {
 		return nil
 	}
@@ -959,6 +1036,9 @@ func (g *Game) handleInput() {
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyP) {
 		g.showParticles = !g.showParticles
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyH) {
+		g.showLabel = !g.showLabel
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
 		g.paused = !g.paused
@@ -1173,6 +1253,7 @@ func (g *Game) setAlpha(deg float64) {
 		a += 360
 	}
 	g.alphaDeg = a
+	g.noteUserInput()
 	if g.scn == nil {
 		g.applyBody(false)
 		return
@@ -1195,6 +1276,7 @@ func (g *Game) setSpeed(u float64) {
 	g.simErr = ""
 	g.u0 = math.Max(0.02, math.Min(0.15, u))
 	g.sim.SetInletSpeed(g.u0)
+	g.noteUserInput()
 }
 
 // Draw paints the clipped simulation viewport and the two information panels —
@@ -1230,6 +1312,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	g.drawMarkers(vp)
 	g.drawForces(vp)
+	if g.showLabel {
+		g.drawLabel(vp)
+	}
 
 	// Kiosk mode stops here: only the flow image (plus, with kioskControls,
 	// the slider strip), no border, side panel, toolbar, or bottom panel.
@@ -1818,6 +1903,57 @@ func (g *Game) drawColorbar(screen *ebiten.Image, x, y, w, h float64) {
 	}
 }
 
+// drawLabel overlays a compact legend in the lower-right of the flow
+// viewport: mode, a colorbar with units, calculated values (Cl/Cd/L-D) and
+// the user-set values driving the sim (airspeed, AoA, control surface).
+// Unlike the side panel, this still renders in kiosk/clean mode -- an
+// unattended exhibit display has nowhere else to read these values from.
+func (g *Game) drawLabel(dst *ebiten.Image) {
+	const panelW = 210.0
+	const barW = 140.0
+	const barH = 8.0
+	const pad = 10.0
+	const rowH = 16.0
+
+	hasCtrl := g.controlObject() != nil
+	rows := 3 // Cl/Cd/L-D line, airspeed/AoA line, plus the mode header
+	if hasCtrl {
+		rows++
+	}
+	barBlockH := barH + 28 // the bar itself plus its title above and min/max below
+	panelH := pad*2 + rowH + barBlockH + float64(rows-1)*rowH
+
+	x := float64(simW) - panelW - 12
+	y := float64(simH) - panelH - 12
+
+	vector.FillRect(dst, float32(x), float32(y), float32(panelW), float32(panelH), color.RGBA{0, 0, 0, 160}, false)
+	vector.StrokeRect(dst, float32(x), float32(y), float32(panelW), float32(panelH), 1, colSep, false)
+
+	tx, ty := x+pad, y+pad
+	modeName := map[fieldMode]string{modeSpeed: "SPEED", modeVorticity: "VORTICITY", modePressure: "PRESSURE"}[g.mode]
+	drawString(dst, modeName, tx, ty, colHeader)
+	ty += rowH + 6
+
+	g.drawColorbar(dst, tx, ty+16, barW, barH)
+	ty += barBlockH
+
+	cl, cd := g.clCur, g.cdCur
+	ld := 0.0
+	if cd != 0 {
+		ld = cl / cd
+	}
+	drawString(dst, fmt.Sprintf("Cl %+.2f  Cd %+.3f  L/D %+.1f", cl, cd, ld), tx, ty, colValue)
+	ty += rowH
+
+	mach := g.u0 * math.Sqrt(3)
+	drawString(dst, fmt.Sprintf("Ma %.2f  AoA %+.1f°", mach, g.alphaDeg), tx, ty, colValue)
+	ty += rowH
+
+	if hasCtrl {
+		drawString(dst, fmt.Sprintf("Control %+.1f°", g.controlDeg), tx, ty, colValue)
+	}
+}
+
 // drawBottomPanel lists the keyboard controls and the draggable sliders.
 func (g *Game) drawBottomPanel(screen *ebiten.Image) {
 	top := float64(simH)
@@ -1832,6 +1968,7 @@ func (g *Game) drawBottomPanel(screen *ebiten.Image) {
 		{"S", "streamlines"},
 		{"G", "glow / bloom"},
 		{"P", "particles"},
+		{"H", "legend"},
 		{"[  ]", "inlet speed"},
 		{"Space", "pause / resume"},
 		{"N", "step (paused)"},
