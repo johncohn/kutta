@@ -1903,55 +1903,92 @@ func (g *Game) drawColorbar(screen *ebiten.Image, x, y, w, h float64) {
 	}
 }
 
-// drawLabel overlays a compact legend in the lower-right of the flow
-// viewport: mode, a colorbar with units, calculated values (Cl/Cd/L-D) and
-// the user-set values driving the sim (airspeed, AoA, control surface).
+// charW is basicfont.Face7x13's fixed glyph width, letting text be
+// right-aligned by exact math instead of an approximate measurement.
+const charW = 7.0
+
+// drawLabel overlays a compact, plain-language legend in the lower-right of
+// the flow viewport: what the color means, and the values driving the sim.
 // Unlike the side panel, this still renders in kiosk/clean mode -- an
-// unattended exhibit display has nowhere else to read these values from.
+// unattended exhibit display has nowhere else to read these from. The sim
+// uses qualitative lattice units with no real physical scale (see lbm's
+// package doc), so "units" here means clear wording and percentages, not a
+// fabricated SI number; and this deliberately shows fewer values than the
+// dev side panel, each one spelled out rather than abbreviated.
 func (g *Game) drawLabel(dst *ebiten.Image) {
-	const panelW = 210.0
-	const barW = 140.0
-	const barH = 8.0
-	const pad = 10.0
-	const rowH = 16.0
+	const panelW = 230.0
+	const barW = 150.0
+	const barH = 10.0
+	const pad = 12.0
+	const lineH = 18.0
+	const sectionGap = 10.0
 
 	hasCtrl := g.controlObject() != nil
-	rows := 3 // Cl/Cd/L-D line, airspeed/AoA line, plus the mode header
+	valueLines := 2.0
 	if hasCtrl {
-		rows++
+		valueLines = 3.0
 	}
-	barBlockH := barH + 28 // the bar itself plus its title above and min/max below
-	panelH := pad*2 + rowH + barBlockH + float64(rows-1)*rowH
+	// Every term below sums the exact same line/gap constants used to draw
+	// it, so the panel can never clip or overlap its own content.
+	barBlockH := lineH + barH + lineH // caption above, the bar, caption below
+	panelH := pad*2 + lineH + sectionGap + barBlockH + sectionGap + valueLines*lineH + sectionGap + lineH
 
 	x := float64(simW) - panelW - 12
 	y := float64(simH) - panelH - 12
 
-	vector.FillRect(dst, float32(x), float32(y), float32(panelW), float32(panelH), color.RGBA{0, 0, 0, 160}, false)
+	vector.FillRect(dst, float32(x), float32(y), float32(panelW), float32(panelH), color.RGBA{0, 0, 0, 180}, false)
 	vector.StrokeRect(dst, float32(x), float32(y), float32(panelW), float32(panelH), 1, colSep, false)
 
 	tx, ty := x+pad, y+pad
-	modeName := map[fieldMode]string{modeSpeed: "SPEED", modeVorticity: "VORTICITY", modePressure: "PRESSURE"}[g.mode]
+	modeName := map[fieldMode]string{
+		modeSpeed:     "AIRFLOW SPEED",
+		modeVorticity: "SWIRLING MOTION",
+		modePressure:  "AIR PRESSURE",
+	}[g.mode]
 	drawString(dst, modeName, tx, ty, colHeader)
-	ty += rowH + 6
+	ty += lineH + sectionGap
 
-	g.drawColorbar(dst, tx, ty+16, barW, barH)
-	ty += barBlockH
-
-	cl, cd := g.clCur, g.cdCur
-	ld := 0.0
-	if cd != 0 {
-		ld = cl / cd
+	var barTitle, barLo, barHi string
+	switch g.mode {
+	case modeVorticity:
+		barTitle, barLo, barHi = "Color shows spin direction:", "clockwise", "counter-clockwise"
+	case modePressure:
+		barTitle, barLo, barHi = "Color shows air pressure:", "suction (pulls)", "high (pushes)"
+	default:
+		barTitle, barLo, barHi = "Color shows airflow speed:", "slow", "fast"
 	}
-	drawString(dst, fmt.Sprintf("Cl %+.2f  Cd %+.3f  L/D %+.1f", cl, cd, ld), tx, ty, colValue)
-	ty += rowH
+	drawString(dst, barTitle, tx, ty, colLabel)
+	barY := ty + lineH
+	const segs = 48
+	for i := range segs {
+		t := float64(i) / (segs - 1)
+		var c color.RGBA
+		switch g.mode {
+		case modeVorticity:
+			c = viz.Vorticity((t*2-1)*vortScale, vortScale)
+		case modePressure:
+			c = viz.Pressure((t*2-1)*cpScale, cpScale)
+		default:
+			c = viz.Speed(t)
+		}
+		vector.FillRect(dst, float32(tx+t*barW), float32(barY), float32(barW/segs+1), float32(barH), c, false)
+	}
+	vector.StrokeRect(dst, float32(tx), float32(barY), float32(barW), float32(barH), 1, colSep, false)
+	drawString(dst, barLo, tx, barY+barH+4, colLabel)
+	drawString(dst, barHi, tx+barW-float64(len(barHi))*charW, barY+barH+4, colLabel)
+	ty = barY + barH + 4 + lineH + sectionGap
 
-	mach := g.u0 * math.Sqrt(3)
-	drawString(dst, fmt.Sprintf("Ma %.2f  AoA %+.1f°", mach, g.alphaDeg), tx, ty, colValue)
-	ty += rowH
-
+	pct := 100 * g.u0 / spdMax
+	drawString(dst, fmt.Sprintf("Wind speed: %.0f%% of max", pct), tx, ty, colValue)
+	ty += lineH
+	drawString(dst, fmt.Sprintf("Angle of attack: %+.0f°", g.alphaDeg), tx, ty, colValue)
+	ty += lineH
 	if hasCtrl {
-		drawString(dst, fmt.Sprintf("Control %+.1f°", g.controlDeg), tx, ty, colValue)
+		drawString(dst, fmt.Sprintf("Control surface: %+.0f°", g.controlDeg), tx, ty, colValue)
+		ty += lineH
 	}
+	ty += sectionGap
+	drawString(dst, fmt.Sprintf("Lift: %+.2f   Drag: %+.3f", g.clCur, g.cdCur), tx, ty, colValue)
 }
 
 // drawBottomPanel lists the keyboard controls and the draggable sliders.
