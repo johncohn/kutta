@@ -204,6 +204,12 @@ type Game struct {
 	// side panel, it still shows in kiosk/clean mode, since that's the only
 	// place an unattended exhibit display can read these values at all.
 	showLabel bool
+	// labelBarImg caches the legend's gradient bar: its pixels are a pure
+	// function of mode (fixed t in [0,1], not live field data), so redrawing
+	// it from scratch every frame -- 48 FillRect calls plus their state
+	// changes -- was pure waste. Rebuilt only when labelBarMode != mode.
+	labelBarImg  *ebiten.Image
+	labelBarMode fieldMode
 
 	// Demo mode: after demoIdleSec of no real change to speed/AoA/control (via
 	// setSpeed/setAlpha/setControl -- the same choke points sliders, keyboard
@@ -1915,6 +1921,29 @@ const charW = 7.0
 // package doc), so "units" here means clear wording and percentages, not a
 // fabricated SI number; and this deliberately shows fewer values than the
 // dev side panel, each one spelled out rather than abbreviated.
+// rebuildLabelBarImage (re)renders the legend's gradient bar into
+// labelBarImg. Called only when the mode has changed since the last call;
+// see labelBarImg's field comment for why this is safe to cache.
+func (g *Game) rebuildLabelBarImage(barW, barH float64) {
+	g.labelBarMode = g.mode
+	g.labelBarImg = ebiten.NewImage(int(barW), int(barH))
+	const segs = 48
+	segW := barW / segs
+	for i := range segs {
+		t := float64(i) / (segs - 1)
+		var c color.RGBA
+		switch g.mode {
+		case modeVorticity:
+			c = viz.Vorticity((t*2-1)*vortScale, vortScale)
+		case modePressure:
+			c = viz.Pressure((t*2-1)*cpScale, cpScale)
+		default:
+			c = viz.Speed(t)
+		}
+		vector.FillRect(g.labelBarImg, float32(t*barW), 0, float32(segW+1), float32(barH), c, false)
+	}
+}
+
 func (g *Game) drawLabel(dst *ebiten.Image) {
 	const panelW = 230.0
 	const barW = 150.0
@@ -1959,20 +1988,12 @@ func (g *Game) drawLabel(dst *ebiten.Image) {
 	}
 	drawString(dst, barTitle, tx, ty, colLabel)
 	barY := ty + lineH
-	const segs = 48
-	for i := range segs {
-		t := float64(i) / (segs - 1)
-		var c color.RGBA
-		switch g.mode {
-		case modeVorticity:
-			c = viz.Vorticity((t*2-1)*vortScale, vortScale)
-		case modePressure:
-			c = viz.Pressure((t*2-1)*cpScale, cpScale)
-		default:
-			c = viz.Speed(t)
-		}
-		vector.FillRect(dst, float32(tx+t*barW), float32(barY), float32(barW/segs+1), float32(barH), c, false)
+	if g.labelBarImg == nil || g.labelBarMode != g.mode {
+		g.rebuildLabelBarImage(barW, barH)
 	}
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(tx, barY)
+	dst.DrawImage(g.labelBarImg, op)
 	vector.StrokeRect(dst, float32(tx), float32(barY), float32(barW), float32(barH), 1, colSep, false)
 	drawString(dst, barLo, tx, barY+barH+4, colLabel)
 	drawString(dst, barHi, tx+barW-float64(len(barHi))*charW, barY+barH+4, colLabel)
