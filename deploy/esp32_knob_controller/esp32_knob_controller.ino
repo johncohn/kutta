@@ -155,20 +155,40 @@ int16_t lastRawAoa = INT16_MIN;
 int16_t lastRawCtrl = INT16_MIN;
 
 // Debounce: a real mechanical push-button bounces on contact, and
-// isPressed()'s own edge detection isn't enough to fully absorb that, so a
-// single physical click can otherwise register as several presses in a row.
-// Requiring a minimum gap between accepted presses per knob fixes it.
-const unsigned long DEBOUNCE_MS = 250;
-unsigned long lastPressSpeed = 0;
-unsigned long lastPressAoa = 0;
-unsigned long lastPressCtrl = 0;
+// isPressed()'s own edge detection isn't enough to fully absorb that -- one
+// physical click can report as several separate presses in quick succession.
+//
+// A fixed cooldown after the last ACCEPTED press (the previous approach here)
+// gets this wrong both ways: if a bounce burst happens to span longer than
+// the cooldown, more than one of its edges gets accepted (a "skip" to the
+// state two presses later); and it can also reject a genuinely fast
+// deliberate second press from the user.
+//
+// This instead waits for quiet: every isPressed() edge resets a timer, and
+// the press is only accepted once QUIET_MS has passed with no further edges
+// -- so an entire bounce burst, however long or however many edges it has,
+// always collapses into exactly one accepted press, and a real second press
+// is only ever blocked by the (short) quiet window, not an arbitrary cooldown.
+struct Debounce {
+  bool pending = false;
+  unsigned long lastEdge = 0;
+};
 
-bool debouncedPress(ModulinoKnob &knob, unsigned long &lastPressTime) {
-  if (!knob.isPressed()) return false;
-  unsigned long now = millis();
-  if (now - lastPressTime < DEBOUNCE_MS) return false;
-  lastPressTime = now;
-  return true;
+const unsigned long QUIET_MS = 40;
+
+Debounce dbSpeed, dbAoa, dbCtrl;
+
+bool debouncedPress(ModulinoKnob &knob, Debounce &db) {
+  if (knob.isPressed()) {
+    db.pending = true;
+    db.lastEdge = millis();
+    return false; // wait for quiet before accepting
+  }
+  if (db.pending && millis() - db.lastEdge >= QUIET_MS) {
+    db.pending = false;
+    return true;
+  }
+  return false;
 }
 
 void loop() {
@@ -192,7 +212,7 @@ void loop() {
     sendMessage("SPD", speed);
     lastSpeed = speed;
   }
-  if (debouncedPress(knobSpeed, lastPressSpeed)) {
+  if (debouncedPress(knobSpeed, dbSpeed)) {
     modeIdx = (modeIdx + 1) % MODE_COUNT;
     char buf[24];
     snprintf(buf, sizeof(buf), "MODE %s", MODE_NAMES[modeIdx]);
@@ -204,7 +224,7 @@ void loop() {
     sendMessage("AOA", aoa);
     lastAoa = aoa;
   }
-  if (debouncedPress(knobAoa, lastPressAoa)) {
+  if (debouncedPress(knobAoa, dbAoa)) {
     streamlinesOn = !streamlinesOn;
     char buf[24];
     snprintf(buf, sizeof(buf), "STREAMLINES %d", streamlinesOn ? 1 : 0);
@@ -216,14 +236,17 @@ void loop() {
     sendMessage("CTRL", ctrl);
     lastCtrl = ctrl;
   }
-  if (debouncedPress(knobCtrl, lastPressCtrl)) {
+  if (debouncedPress(knobCtrl, dbCtrl)) {
     particlesOn = !particlesOn;
     char buf[24];
     snprintf(buf, sizeof(buf), "PARTICLES %d", particlesOn ? 1 : 0);
     sendRaw(buf);
   }
 
-  delay(10);
+  // Tight enough that a brief isPressed() edge is very unlikely to land
+  // entirely between two reads and go unseen -- the debounce above is what
+  // actually collapses a bounce burst into one press, not this delay.
+  delay(2);
 }
 
 // scanI2C lists every address that acks on the bus, so a misconfigured Knob

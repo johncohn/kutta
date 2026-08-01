@@ -1978,8 +1978,11 @@ func (g *Game) drawLabel(dst *ebiten.Image) {
 	drawString(dst, barHi, tx+barW-float64(len(barHi))*charW, barY+barH+4, colLabel)
 	ty = barY + barH + 4 + lineH + sectionGap
 
-	pct := 100 * g.u0 / spdMax
-	drawString(dst, fmt.Sprintf("Wind speed: %.0f%% of max", pct), tx, ty, colValue)
+	// Lattice units carry no real physical scale (see lbm's package doc), so
+	// this maps the same fraction of the solver's stable speed range onto a
+	// plausible desktop-exhibit knots range instead of a fabricated SI value.
+	knots := 25 * g.u0 / spdMax
+	drawString(dst, fmt.Sprintf("Wind speed: %.0f kn", knots), tx, ty, colValue)
 	ty += lineH
 	drawString(dst, fmt.Sprintf("Angle of attack: %+.0f°", g.alphaDeg), tx, ty, colValue)
 	ty += lineH
