@@ -89,6 +89,19 @@ func TestApplyControlMessageTogglesAndMode(t *testing.T) {
 		t.Error("PARTICLES 1 should turn particles on")
 	}
 
+	g.applyControlMessage("CTRL 15")
+	g.drainPending()
+	if g.controlDeg != 15 {
+		t.Errorf("CTRL 15: controlDeg = %v, want 15", g.controlDeg)
+	}
+
+	// setControl clamps to +-controlLimit; confirm CTRL inherits that.
+	g.applyControlMessage("CTRL 999")
+	g.drainPending()
+	if g.controlDeg != controlLimit {
+		t.Errorf("CTRL 999: controlDeg = %v, want clamped to %v", g.controlDeg, controlLimit)
+	}
+
 	g.applyControlMessage("MODE pressure")
 	g.drainPending()
 	if g.mode != modePressure {

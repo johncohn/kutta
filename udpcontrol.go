@@ -22,10 +22,9 @@ import (
 // this kind of private/local use), chosen automatically by whether the host
 // parses as a multicast IP.
 //
-// Channels: AOA and SPD (angle of attack, inlet speed, both numeric), GLOW,
-// STREAMLINES and PARTICLES (0 or 1), and MODE (speed, vorticity, or
-// pressure). A control-surface channel is a natural follow-up once there's a
-// live control-surface slider for it to drive.
+// Channels: AOA, SPD and CTRL (angle of attack, inlet speed, control-surface
+// deflection in degrees; all numeric), GLOW, STREAMLINES and PARTICLES (0 or
+// 1), and MODE (speed, vorticity, or pressure).
 func (g *Game) startUDPControl(addr string) error {
 	conn, err := listenUDPControl(addr)
 	if err != nil {
@@ -107,6 +106,16 @@ func (g *Game) applyControlMessage(line string) {
 			return
 		}
 		g.enqueue(func() { g.setSpeed(v) })
+	case "CTRL":
+		v, perr := strconv.ParseFloat(value, 64)
+		if perr != nil {
+			log.Printf("kutta: UDP control: CTRL wants a number, got %q", value)
+			return
+		}
+		// setControl clamps to +-controlLimit itself and is a harmless no-op
+		// when the loaded scene has no object marked Control, so the sender
+		// doesn't need to know whether one exists.
+		g.enqueue(func() { g.setControl(v) })
 	case "GLOW":
 		on, perr := strconv.ParseFloat(value, 64)
 		if perr != nil {
