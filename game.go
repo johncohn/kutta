@@ -1524,7 +1524,7 @@ func (g *Game) drawStreamlines(dst *ebiten.Image) {
 	g.streamlineFrame++
 
 	op := &vector.StrokeOptions{Width: 1, LineJoin: vector.LineJoinBevel}
-	dop := &vector.DrawPathOptions{AntiAlias: false}
+	dop := &vector.DrawPathOptions{AntiAlias: true}
 	dop.ColorScale.ScaleWithColor(color.RGBA{0xde, 0xe8, 0xff, 0xc0})
 	vector.StrokePath(dst, &g.streamlinePath, op, dop)
 }
