@@ -73,6 +73,36 @@ const KnobRange RANGE_SPEED = {0.005f, 0.02f, 0.15f};  // matches spdMin/spdMax 
 const KnobRange RANGE_AOA = {0.5f, -20.0f, 20.0f};
 const KnobRange RANGE_CTRL = {1.0f, -40.0f, 40.0f};  // matches controlLimit in game.go
 
+// Debounce: a real mechanical push-button bounces on contact, and
+// isPressed()'s own edge detection isn't enough to fully absorb that -- one
+// physical click can report as several separate presses in quick succession.
+//
+// A fixed cooldown after the last ACCEPTED press (the previous approach here)
+// gets this wrong both ways: if a bounce burst happens to span longer than
+// the cooldown, more than one of its edges gets accepted (a "skip" to the
+// state two presses later); and it can also reject a genuinely fast
+// deliberate second press from the user.
+//
+// This instead waits for quiet: every isPressed() edge resets a timer, and
+// the press is only accepted once QUIET_MS has passed with no further edges
+// -- so an entire bounce burst, however long or however many edges it has,
+// always collapses into exactly one accepted press, and a real second press
+// is only ever blocked by the (short) quiet window, not an arbitrary cooldown.
+//
+// Declared up here, right after KnobRange rather than down near loop() where
+// it's used: the Arduino IDE auto-generates function prototypes and inserts
+// them right after the includes, before any other code -- a prototype
+// referencing a type declared later in the file fails to compile even though
+// the function itself comes after the type's real definition.
+struct Debounce {
+  bool pending = false;
+  unsigned long lastEdge = 0;
+};
+
+const unsigned long QUIET_MS = 40;
+
+Debounce dbSpeed, dbAoa, dbCtrl;
+
 // last value actually sent per knob, so we only send on a real change
 // instead of flooding the network every loop iteration.
 float lastSpeed = NAN;
@@ -153,30 +183,6 @@ void setup() {
 int16_t lastRawSpeed = INT16_MIN;
 int16_t lastRawAoa = INT16_MIN;
 int16_t lastRawCtrl = INT16_MIN;
-
-// Debounce: a real mechanical push-button bounces on contact, and
-// isPressed()'s own edge detection isn't enough to fully absorb that -- one
-// physical click can report as several separate presses in quick succession.
-//
-// A fixed cooldown after the last ACCEPTED press (the previous approach here)
-// gets this wrong both ways: if a bounce burst happens to span longer than
-// the cooldown, more than one of its edges gets accepted (a "skip" to the
-// state two presses later); and it can also reject a genuinely fast
-// deliberate second press from the user.
-//
-// This instead waits for quiet: every isPressed() edge resets a timer, and
-// the press is only accepted once QUIET_MS has passed with no further edges
-// -- so an entire bounce burst, however long or however many edges it has,
-// always collapses into exactly one accepted press, and a real second press
-// is only ever blocked by the (short) quiet window, not an arbitrary cooldown.
-struct Debounce {
-  bool pending = false;
-  unsigned long lastEdge = 0;
-};
-
-const unsigned long QUIET_MS = 40;
-
-Debounce dbSpeed, dbAoa, dbCtrl;
 
 bool debouncedPress(ModulinoKnob &knob, Debounce &db) {
   if (knob.isPressed()) {
