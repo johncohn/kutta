@@ -67,7 +67,9 @@ func (g *Game) udpControlSupervisor(addr string, conn net.PacketConn) {
 			// The read loop only returns on a real socket error; rebinding
 			// below is also the recovery path for that, not just the timer.
 		case <-time.After(udpRebindInterval):
-			conn.Close()
+			// Closing is how the read loop is unblocked, so a close error has
+			// nowhere useful to go: the socket is being replaced regardless.
+			_ = conn.Close()
 			<-done
 		}
 
@@ -190,6 +192,13 @@ func (g *Game) applyControlMessage(line string) {
 			return
 		}
 		g.enqueue(func() { g.showLabel = on != 0 })
+	case "MODE":
+		fm, fok := parseFieldMode(value)
+		if !fok {
+			log.Printf("kutta: UDP control: MODE wants speed, vorticity, or pressure, got %q", value)
+			return
+		}
+		g.enqueue(func() { g.mode = fm })
 	case "DEMO":
 		v, perr := strconv.ParseFloat(value, 64)
 		if perr != nil {
@@ -206,13 +215,6 @@ func (g *Game) applyControlMessage(line string) {
 				g.demoActive = false
 			}
 		})
-	case "MODE":
-		fm, fok := parseFieldMode(value)
-		if !fok {
-			log.Printf("kutta: UDP control: MODE wants speed, vorticity, or pressure, got %q", value)
-			return
-		}
-		g.enqueue(func() { g.mode = fm })
 	default:
 		log.Printf("kutta: UDP control: unknown channel %q", channel)
 	}

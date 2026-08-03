@@ -544,6 +544,14 @@ func (g *Game) controlObject() *scene.Object {
 // setControl changes the live control-surface deflection in place (no reset),
 // re-applying immediately so it moves even while the timeline is paused.
 func (g *Game) setControl(deg float64) {
+	// Reject non-finite input here, the way setAlpha and setSpeed already do:
+	// math.Max/math.Min propagate a NaN instead of clamping it, and a NaN
+	// deflection rotates the control surface out of the rasterized mask, so a
+	// stray "CTRL nan" over the network would delete part of the body with no
+	// UI path back. This is the choke point every caller shares.
+	if math.IsNaN(deg) || math.IsInf(deg, 0) {
+		return
+	}
 	g.controlDeg = math.Max(-controlLimit, math.Min(controlLimit, deg))
 	g.noteUserInput()
 	if g.scn == nil {
@@ -1920,14 +1928,6 @@ func (g *Game) drawColorbar(screen *ebiten.Image, x, y, w, h float64) {
 // right-aligned by exact math instead of an approximate measurement.
 const charW = 7.0
 
-// drawLabel overlays a compact, plain-language legend in the lower-right of
-// the flow viewport: what the color means, and the values driving the sim.
-// Unlike the side panel, this still renders in kiosk/clean mode -- an
-// unattended exhibit display has nowhere else to read these from. The sim
-// uses qualitative lattice units with no real physical scale (see lbm's
-// package doc), so "units" here means clear wording and percentages, not a
-// fabricated SI number; and this deliberately shows fewer values than the
-// dev side panel, each one spelled out rather than abbreviated.
 // rebuildLabelBarImage (re)renders the legend's gradient bar into
 // labelBarImg. Called only when the mode has changed since the last call;
 // see labelBarImg's field comment for why this is safe to cache.
@@ -1951,6 +1951,14 @@ func (g *Game) rebuildLabelBarImage(barW, barH float64) {
 	}
 }
 
+// drawLabel overlays a compact, plain-language legend in the lower-right of
+// the flow viewport: what the color means, and the values driving the sim.
+// Unlike the side panel, this still renders in kiosk/clean mode -- an
+// unattended exhibit display has nowhere else to read these from. The sim
+// uses qualitative lattice units with no real physical scale (see lbm's
+// package doc), so "units" here means clear wording and percentages, not a
+// fabricated SI number; and this deliberately shows fewer values than the
+// dev side panel, each one spelled out rather than abbreviated.
 func (g *Game) drawLabel(dst *ebiten.Image) {
 	const panelW = 230.0
 	const barW = 150.0

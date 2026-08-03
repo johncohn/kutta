@@ -113,6 +113,20 @@ func TestApplyControlMessageTogglesAndMode(t *testing.T) {
 		t.Error("LABEL 0 should turn the legend off")
 	}
 
+	g.applyControlMessage("MODE pressure")
+	g.drainPending()
+	if g.mode != modePressure {
+		t.Errorf("mode = %v, want modePressure", g.mode)
+	}
+
+	// A bad value for a channel should be logged and ignored, not panic or
+	// leave a stale enqueued closure.
+	g.applyControlMessage("MODE sideways")
+	g.drainPending()
+	if g.mode != modePressure {
+		t.Errorf("invalid MODE value should be ignored; mode = %v, want unchanged modePressure", g.mode)
+	}
+
 	g.applyControlMessage("DEMO 45")
 	g.drainPending()
 	if g.demoIdleSec != 45 {
@@ -126,19 +140,5 @@ func TestApplyControlMessageTogglesAndMode(t *testing.T) {
 	}
 	if g.demoActive {
 		t.Error("DEMO 0 should hand control back immediately, not freeze mid-wander")
-	}
-
-	g.applyControlMessage("MODE pressure")
-	g.drainPending()
-	if g.mode != modePressure {
-		t.Errorf("mode = %v, want modePressure", g.mode)
-	}
-
-	// A bad value for a channel should be logged and ignored, not panic or
-	// leave a stale enqueued closure.
-	g.applyControlMessage("MODE sideways")
-	g.drainPending()
-	if g.mode != modePressure {
-		t.Errorf("invalid MODE value should be ignored; mode = %v, want unchanged modePressure", g.mode)
 	}
 }
