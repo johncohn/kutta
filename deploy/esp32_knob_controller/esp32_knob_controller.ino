@@ -173,6 +173,14 @@ void setup() {
   Serial.print("Connected, IP: ");
   Serial.println(WiFi.localIP());
 
+  // ESP32 WiFi modem-sleep (on by default) lets the radio doze between
+  // beacons to save power -- for a device that's USB-powered and otherwise
+  // idle except a steady trickle of small UDP sends, that's the single most
+  // common cause of an ESP32 going quiet after working fine for a while:
+  // the association degrades or drops with nothing visible on this side.
+  // There's no battery to protect here, so it's simplest to just disable it.
+  WiFi.setSleep(false);
+
   udp.begin(0);  // ephemeral local port; we only ever send
 }
 
@@ -183,6 +191,46 @@ void setup() {
 int16_t lastRawSpeed = INT16_MIN;
 int16_t lastRawAoa = INT16_MIN;
 int16_t lastRawCtrl = INT16_MIN;
+
+// -- WiFi health: this sketch is a pure sender, so it never joins the
+// multicast group and has no membership to lose (only a receiver, like
+// kutta itself, needs to rejoin -- see udpControlSupervisor in
+// udpcontrol.go). What it can lose is the WiFi association underneath it,
+// and sendRaw() below has no way to notice that (endPacket()'s failure
+// return is intentionally ignored, matching kutta's fire-and-forget UDP
+// model) -- so the only reliable recovery is periodically checking
+// WiFi.status() and, on a drop, redoing the connect and UDP socket setup
+// from scratch, the same "full rebind rather than patch partial failure"
+// approach udpControlSupervisor takes on the receiving end.
+const unsigned long WIFI_CHECK_INTERVAL_MS = 2000;
+unsigned long lastWifiCheck = 0;
+
+void ensureWiFiConnected() {
+  if (millis() - lastWifiCheck < WIFI_CHECK_INTERVAL_MS) return;
+  lastWifiCheck = millis();
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  // Only reached once the association is already down, so blocking the
+  // knob-reading loop here costs nothing that wasn't already lost --
+  // sendRaw() can't deliver anywhere until this succeeds anyway.
+  Serial.println("WiFi: disconnected, reconnecting...");
+  WiFi.disconnect();
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+    delay(200);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi: reconnect attempt failed, will retry");
+    return;
+  }
+  Serial.print("WiFi: reconnected, IP: ");
+  Serial.println(WiFi.localIP());
+  // The old UDP socket was bound under the previous association; rebind it
+  // too rather than assume it's still good after the interface flapped.
+  udp.stop();
+  udp.begin(0);
+}
 
 bool debouncedPress(ModulinoKnob &knob, Debounce &db) {
   if (knob.isPressed()) {
@@ -198,6 +246,8 @@ bool debouncedPress(ModulinoKnob &knob, Debounce &db) {
 }
 
 void loop() {
+  ensureWiFiConnected();
+
   int16_t rawSpeed = knobSpeed.get();
   int16_t rawAoa = knobAoa.get();
   int16_t rawCtrl = knobCtrl.get();
