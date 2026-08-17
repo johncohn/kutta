@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# labwc's own autostart script (~/.config/labwc/autostart), for a Raspberry
+# Pi OS Desktop exhibit build. install.sh writes this instead of a
+# ~/.config/autostart/*.desktop entry on a labwc session (Raspberry Pi OS
+# Bookworm's default compositor): that XDG autostart convention goes through
+# an extra lxsession-xdg-autostart step which, on labwc, did not reliably run
+# at real boot -- confirmed on repeated cold reboots of the actual exhibit
+# Pi: the three lines below (labwc's own system default) came up fine every
+# time, kutta never did without this file. Launching kutta directly here,
+# the same way those three lines already are, is what labwc actually runs
+# reliably.
+/usr/bin/lwrespawn /usr/bin/pcmanfm-pi &
+/usr/bin/lwrespawn /usr/bin/wf-panel-pi &
+/usr/bin/kanshi &
+
+# The short sleep gives WiFi/routing a little more time to settle before
+# kutta binds its multicast UDP listener (see listenUDPControl in
+# udpcontrol.go for why the interface has to resolve correctly at bind time).
+sleep 3
+cd __KUTTA_DIR__ && DISPLAY=:0 ./kutta -scene __KUTTA_DIR__/cx300wing.afoil -kiosk -mode speed -particles=false -streamlines -tps 30 -substeps 2 -label -demo 30 -udp 239.192.1.1:9000 > /tmp/kutta.log 2>&1 &
