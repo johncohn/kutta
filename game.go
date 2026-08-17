@@ -1532,13 +1532,17 @@ func (g *Game) drawStreamlines(dst *ebiten.Image) {
 	g.streamlineFrame++
 
 	op := &vector.StrokeOptions{Width: 1, LineJoin: vector.LineJoinBevel}
-	// AntiAlias true measured ~2x the draw cost on the Pi's graphics driver
-	// (Mac's Metal backend barely notices it) -- reverted; see the -label
-	// commit history for how that was found. A cheaper route to smoother
-	// lines on the Pi, if wanted later: draw into a small offscreen image at
-	// grid resolution and let the existing FilterLinear upscale (already used
-	// for the field) do the smoothing, the same free trick that makes the
-	// field itself look smooth despite being a low-res raster.
+	// AntiAlias true roughly doubles draw cost on the Pi's graphics driver
+	// (Mac's Metal backend barely notices it) -- re-measured 2026-08 after
+	// fixing an unrelated bug where the Pi was compositing to a 4K
+	// framebuffer instead of 1080p, in case that had been skewing the
+	// original measurement; it wasn't (18.9ms/26fps vs 39.7ms/12.5fps,
+	// AA off vs on, both at the correct 1080p), so this stays off. A
+	// cheaper route to smoother lines, if wanted later: draw into a small
+	// offscreen image at grid resolution and let the existing FilterLinear
+	// upscale (already used for the field) do the smoothing, the same free
+	// trick that makes the field itself look smooth despite being a
+	// low-res raster.
 	dop := &vector.DrawPathOptions{AntiAlias: false}
 	dop.ColorScale.ScaleWithColor(color.RGBA{0xde, 0xe8, 0xff, 0xc0})
 	vector.StrokePath(dst, &g.streamlinePath, op, dop)

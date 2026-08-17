@@ -164,6 +164,12 @@ void setup() {
   }
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  // Printed as soon as begin() sets the WiFi mode, before waiting on a
+  // connection -- so the box's MAC is visible on the serial monitor even if
+  // it never manages to associate (e.g. checking it against a router's DHCP
+  // reservation or MAC allowlist).
+  Serial.print("MAC address: ");
+  Serial.println(WiFi.macAddress());
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);
