@@ -2027,8 +2027,10 @@ func (g *Game) drawLabel(dst *ebiten.Image) {
 
 	// Lattice units carry no real physical scale (see lbm's package doc), so
 	// this maps the same fraction of the solver's stable speed range onto a
-	// plausible desktop-exhibit knots range instead of a fabricated SI value.
-	knots := 25 * g.u0 / spdMax
+	// real-world calibration point instead of a fabricated SI value: 150kn
+	// is this aircraft's actual max speed, so full knob/slider speed
+	// (spdMax) reads as 150kn, down to ~20kn at spdMin.
+	knots := 150 * g.u0 / spdMax
 	drawString(dst, fmt.Sprintf("Wind speed: %.0f kn", knots), tx, ty, colValue)
 	ty += lineH
 	// "deg" not "°": basicfont.Face7x13 (this on-screen text's fixed-width
