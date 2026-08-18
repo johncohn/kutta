@@ -179,6 +179,7 @@ type Game struct {
 	nacaInput       string  // NACA code being typed in the toolbar field
 	alphaDeg        float64 // angle of attack in degrees
 	u0              float64
+	maxDisplayKn    float64 // legend's "Wind speed" reading at full slider speed (spdMax) -- see -max-kn
 	controlDeg      float64 // live deflection of the scene's Control object, in degrees
 	mode            fieldMode
 	paused          bool
@@ -363,6 +364,7 @@ func NewGame() *Game {
 	g := &Game{
 		alphaDeg:      4,
 		u0:            defaultU,
+		maxDisplayKn:  25,
 		glow:          true,
 		showParticles: true,
 		nacaCode:      profiles[0],
@@ -2026,11 +2028,12 @@ func (g *Game) drawLabel(dst *ebiten.Image) {
 	ty = barY + barH + 4 + lineH + sectionGap
 
 	// Lattice units carry no real physical scale (see lbm's package doc), so
-	// this maps the same fraction of the solver's stable speed range onto a
-	// real-world calibration point instead of a fabricated SI value: 150kn
-	// is this aircraft's actual max speed, so full knob/slider speed
-	// (spdMax) reads as 150kn, down to ~20kn at spdMin.
-	knots := 150 * g.u0 / spdMax
+	// this maps the same fraction of the solver's stable speed range onto
+	// -max-kn instead of a fabricated SI value: full knob/slider speed
+	// (spdMax) reads as maxDisplayKn, scaling down proportionally at lower
+	// speeds -- set -max-kn to whatever aircraft's real max speed the
+	// exhibit is demonstrating.
+	knots := g.maxDisplayKn * g.u0 / spdMax
 	drawString(dst, fmt.Sprintf("Wind speed: %.0f kn", knots), tx, ty, colValue)
 	ty += lineH
 	// "deg" not "°": basicfont.Face7x13 (this on-screen text's fixed-width

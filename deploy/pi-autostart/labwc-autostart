@@ -17,4 +17,4 @@
 # kutta binds its multicast UDP listener (see listenUDPControl in
 # udpcontrol.go for why the interface has to resolve correctly at bind time).
 sleep 3
-cd __KUTTA_DIR__ && DISPLAY=:0 ./kutta -scene __KUTTA_DIR__/cx300wing.afoil -kiosk -mode speed -particles=false -streamlines -tps 30 -substeps 2 -label -demo 30 -udp 239.192.1.1:9000 > /tmp/kutta.log 2>&1 &
+cd __KUTTA_DIR__ && DISPLAY=:0 ./kutta -scene __KUTTA_DIR__/cx300wing.afoil -kiosk -mode speed -particles=false -streamlines -tps 30 -substeps 2 -label -demo 30 -max-kn 150 -udp 239.192.1.1:9000 > /tmp/kutta.log 2>&1 &
