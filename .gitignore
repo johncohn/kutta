@@ -34,6 +34,10 @@ go.work.sum
 # Build output
 /airfoil
 /snapshot
+/kutta
+
+# Perf/event logs written by -debug, kept around while tuning the exhibit
+*.debug
 
 # GitHub Pages build output: the workflow rebuilds both on every deploy, and
 # wasm_exec.js has to match the toolchain rather than sit here going stale.
