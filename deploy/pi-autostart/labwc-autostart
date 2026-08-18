@@ -13,8 +13,20 @@
 /usr/bin/lwrespawn /usr/bin/wf-panel-pi &
 /usr/bin/kanshi &
 
-# The short sleep gives WiFi/routing a little more time to settle before
-# kutta binds its multicast UDP listener (see listenUDPControl in
-# udpcontrol.go for why the interface has to resolve correctly at bind time).
+# The short sleep gives WiFi/DHCP a little more time to settle before kutta
+# binds its UDP listener.
+#
+# -udp :9000 is a plain wildcard bind for unicast, not the multicast group
+# this used to use: on the exhibit's wireless network, multicast from the knob
+# box never reached this machine, which enterprise WLANs commonly drop between
+# their clients. The knob box now sends unicast straight to
+# this Pi's DHCP-reserved address as well (KUTTA_UNICAST_IP in
+# esp32_knob_controller.ino). Binding the wildcard rather than that specific
+# address keeps the Pi's own IP out of this launch line entirely, so a lease
+# or reservation change can't silently break startup.
+#
+# To go back to multicast (a hotspot, or a dedicated exhibit AP that passes
+# it), this becomes -udp 239.192.1.1:9000 and nothing else changes -- the knob
+# box sends to both destinations, so it never needs reflashing for this.
 sleep 3
-cd __KUTTA_DIR__ && DISPLAY=:0 ./kutta -scene __KUTTA_DIR__/cx300wing.afoil -kiosk -mode speed -particles=false -streamlines -tps 30 -substeps 2 -label -demo 30 -max-kn 150 -udp 239.192.1.1:9000 > /tmp/kutta.log 2>&1 &
+cd __KUTTA_DIR__ && DISPLAY=:0 ./kutta -scene __KUTTA_DIR__/cx300wing.afoil -kiosk -mode speed -particles=false -streamlines -tps 30 -substeps 2 -label -demo 30 -max-kn 150 -udp :9000 > /tmp/kutta.log 2>&1 &
