@@ -6,6 +6,11 @@
  * no configuration is needed on the kutta side beyond -udp 239.192.1.1:9000
  * -- this is a pure sender, it never listens for anything back.
  *
+ * WiFi: copy wifi_secrets.h.example to wifi_secrets.h (gitignored, so real
+ * credentials are never committed) and list one to three networks there. They
+ * are tried strictly in order, so the exhibit's own network goes first and a
+ * phone hotspot can sit behind it as a fallback -- see WIFI_NETWORKS below.
+ *
  * Wiring: all three Knobs share the QT Py's single STEMMA QT bus (I2C), each
  * pre-configured to its own fixed address (0x3A/0x3B/0x3C) so they can
  * coexist -- see the Arduino Modulino address-setting sketch if yours are
@@ -42,14 +47,78 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
+#include <esp_mac.h>
 
 #include "wifi_secrets.h"
+
+// -- WiFi networks, tried strictly in order until one associates: the
+// exhibit's own network first, a phone hotspot as the fallback for setting up
+// somewhere that network doesn't reach yet (or bench-debugging away from it).
+// Whatever the box lands on, the Pi running kutta has to be on the same
+// network too -- this is multicast on a single L2 segment, nothing routes.
+//
+// The SSID/password literals live in wifi_secrets.h, which is gitignored, so
+// only the shape of this table is ever committed. They're #defines rather
+// than const char* specifically so the #ifdefs below can compile out the
+// fallback slots for a secrets file that only lists one network.
+struct WiFiNetwork {
+  const char *ssid;
+  const char *password;
+};
+
+const WiFiNetwork WIFI_NETWORKS[] = {
+    {WIFI_SSID_1, WIFI_PASSWORD_1},
+#ifdef WIFI_SSID_2
+    {WIFI_SSID_2, WIFI_PASSWORD_2},
+#endif
+#ifdef WIFI_SSID_3
+    {WIFI_SSID_3, WIFI_PASSWORD_3},
+#endif
+};
+const int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NETWORKS[0]);
+
+// Per-network association timeout. WiFi.begin() is asynchronous and
+// WiFi.status() isn't a dependable "that SSID isn't here" signal across
+// builds, so a timeout is what actually decides to move on to the next
+// network -- long enough not to give up on a slow-but-present AP, short
+// enough that falling through to the hotspot isn't a visible hang at boot.
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 12000;
+const unsigned long WIFI_RECONNECT_TIMEOUT_MS = 8000;
 
 // -- Network: matches the Pi's kiosk autostart config and everything else
 // this project has used all along. Sending to a multicast address needs no
 // group join on the sender's side -- only receivers (kutta) join the group.
 const IPAddress KUTTA_MULTICAST_ADDR(239, 192, 1, 1);
 const uint16_t KUTTA_PORT = 9000;
+
+// Optional unicast destination, for networks that filter client-to-client
+// multicast -- enterprise WLANs routinely do, which is the whole reason this
+// exists. It holds the address of the machine running kutta, which needs a
+// DHCP reservation first: a unicast target that moves on lease renewal is
+// worse than no unicast target at all.
+//
+// Define it in wifi_secrets.h, not here. It's a per-installation address
+// rather than anything about how this controller works, and wifi_secrets.h is
+// already the gitignored home for site-specific settings -- so the committed
+// sketch stays identical everywhere and one uncommitted file holds everything
+// that differs between sites. Uncommenting it below works too, if you'd
+// rather keep it all in one place:
+//
+//   #define KUTTA_UNICAST_IP "10.0.0.42"
+//
+// When it's set, every message goes out twice, once multicast and once
+// unicast. The duplicate costs one extra small packet per knob change --
+// nothing, since sends only happen on change -- and in exchange the firmware
+// works whichever mode kutta is in, so moving the exhibit between a
+// multicast-filtering network and a hotspot means changing kutta's -udp flag
+// only, never reflashing this box:
+//
+//   kutta unicast:   -udp :9000                (wildcard bind, any of its IPs)
+//   kutta multicast: -udp 239.192.1.1:9000
+//
+// kutta can only be in one of those modes at a time -- a multicast bind will
+// not pick up unicast packets, or vice versa -- so sending to both is what
+// decouples the two ends. Leave it undefined for multicast only.
 
 const uint8_t ADDR_SPEED = 0x3A;
 const uint8_t ADDR_AOA = 0x3B;
@@ -60,6 +129,15 @@ ModulinoKnob knobAoa(ADDR_AOA);
 ModulinoKnob knobCtrl(ADDR_CTRL);
 
 WiFiUDP udp;
+
+#ifdef KUTTA_UNICAST_IP
+// Parsed once in setup() rather than on every send. unicastOk guards it so a
+// typo'd KUTTA_UNICAST_IP degrades to multicast-only (with a loud serial
+// complaint) instead of quietly firing every packet at 0.0.0.0, which is what
+// a failed fromString() would otherwise leave behind.
+IPAddress kuttaUnicastAddr;
+bool unicastOk = false;
+#endif
 
 // -- Per-knob mapping: physical units per encoder detent, and the min/max
 // each knob enforces on itself before kutta ever sees the value.
@@ -117,6 +195,25 @@ int modeIdx = 0;
 bool streamlinesOn = false;
 bool particlesOn = true;  // matches kutta's own default
 
+// staMacAddress returns this box's station MAC, formatted for a DHCP
+// reservation or MAC allowlist.
+//
+// Deliberately not WiFi.macAddress(): that reads the MAC out of the WiFi
+// driver, which reports all zeros until the driver has actually started, and
+// WiFi.mode(WIFI_STA) alone doesn't get it there on the ESP32 Arduino core --
+// so printing it before the first association attempt (the whole point, so
+// it's legible when association is what's failing) yielded a useless
+// "00:00:00:00:00:00". esp_read_mac() derives the same address straight from
+// efuse and needs no driver at all, so it's correct at any point in setup().
+String staMacAddress() {
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char buf[18];
+  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1],
+           mac[2], mac[3], mac[4], mac[5]);
+  return String(buf);
+}
+
 void setup() {
   Serial.begin(115200);
   // The QT Py's Serial is native USB (not a UART bridge), so a fixed delay
@@ -163,31 +260,35 @@ void setup() {
     delay(1000);
   }
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  // Printed as soon as begin() sets the WiFi mode, before waiting on a
-  // connection -- so the box's MAC is visible on the serial monitor even if
-  // it never manages to associate (e.g. checking it against a router's DHCP
-  // reservation or MAC allowlist).
+  WiFi.mode(WIFI_STA);
+  // Printed before any association attempt, so the box's MAC is visible on
+  // the serial monitor even if it never manages to associate to anything at
+  // all -- which is exactly when you need it, e.g. to check it against a
+  // router's DHCP reservation or MAC allowlist.
   Serial.print("MAC address: ");
-  Serial.println(WiFi.macAddress());
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-  Serial.print("Connected, IP: ");
-  Serial.println(WiFi.localIP());
+  Serial.println(staMacAddress());
 
-  // ESP32 WiFi modem-sleep (on by default) lets the radio doze between
-  // beacons to save power -- for a device that's USB-powered and otherwise
-  // idle except a steady trickle of small UDP sends, that's the single most
-  // common cause of an ESP32 going quiet after working fine for a while:
-  // the association degrades or drops with nothing visible on this side.
-  // There's no battery to protect here, so it's simplest to just disable it.
-  WiFi.setSleep(false);
+  // Keep retrying the whole list rather than giving up: at the exhibit
+  // there's no console to intervene at, and an AP that isn't up yet when the
+  // box powers on is the normal case, not an error.
+  while (!connectWiFi(WIFI_CONNECT_TIMEOUT_MS)) {
+    Serial.println("WiFi: no configured network reachable, starting over");
+    delay(1000);
+  }
+
+#ifdef KUTTA_UNICAST_IP
+  unicastOk = kuttaUnicastAddr.fromString(KUTTA_UNICAST_IP);
+  if (!unicastOk) {
+    Serial.print("KUTTA_UNICAST_IP is not a valid address, multicast only: ");
+    Serial.println(KUTTA_UNICAST_IP);
+  }
+#endif
 
   udp.begin(0);  // ephemeral local port; we only ever send
+
+  // Print the first status line here rather than waiting out the first
+  // interval, so the monitor shows a complete picture immediately at boot.
+  printStatus();
 }
 
 // last raw encoder counts actually printed, so the debug line below only
@@ -197,6 +298,53 @@ void setup() {
 int16_t lastRawSpeed = INT16_MIN;
 int16_t lastRawAoa = INT16_MIN;
 int16_t lastRawCtrl = INT16_MIN;
+
+// connectToNetwork makes one association attempt at one network and reports
+// whether it took. A failed attempt disconnects before returning so the radio
+// is left idle rather than half-associated going into the next network's
+// begin().
+bool connectToNetwork(const WiFiNetwork &n, unsigned long timeoutMs) {
+  Serial.print("WiFi: trying \"");
+  Serial.print(n.ssid);
+  Serial.print("\"");
+  WiFi.begin(n.ssid, n.password);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println();
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect();
+    return false;
+  }
+  Serial.print("WiFi: connected to \"");
+  Serial.print(n.ssid);
+  Serial.print("\", IP: ");
+  Serial.println(WiFi.localIP());
+
+  // ESP32 WiFi modem-sleep (on by default) lets the radio doze between
+  // beacons to save power -- for a device that's USB-powered and otherwise
+  // idle except a steady trickle of small UDP sends, that's the single most
+  // common cause of an ESP32 going quiet after working fine for a while:
+  // the association degrades or drops with nothing visible on this side.
+  // There's no battery to protect here, so it's simplest to just disable it.
+  // Reasserted on every successful association rather than once in setup(),
+  // so a reconnect can't come back up with power-save silently re-enabled.
+  WiFi.setSleep(false);
+  return true;
+}
+
+// connectWiFi walks WIFI_NETWORKS in order and returns on the first one that
+// associates. Always restarting from the top is deliberate: if the box came up
+// on the hotspot fallback, the first drop after the exhibit network appears
+// moves it back onto the preferred network on its own.
+bool connectWiFi(unsigned long perNetworkTimeoutMs) {
+  for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
+    if (connectToNetwork(WIFI_NETWORKS[i], perNetworkTimeoutMs)) return true;
+  }
+  return false;
+}
 
 // -- WiFi health: this sketch is a pure sender, so it never joins the
 // multicast group and has no membership to lose (only a receiver, like
@@ -213,29 +361,72 @@ unsigned long lastWifiCheck = 0;
 
 void ensureWiFiConnected() {
   if (millis() - lastWifiCheck < WIFI_CHECK_INTERVAL_MS) return;
-  lastWifiCheck = millis();
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    lastWifiCheck = millis();
+    return;
+  }
 
   // Only reached once the association is already down, so blocking the
   // knob-reading loop here costs nothing that wasn't already lost --
   // sendRaw() can't deliver anywhere until this succeeds anyway.
   Serial.println("WiFi: disconnected, reconnecting...");
   WiFi.disconnect();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
-    delay(200);
-  }
-  if (WiFi.status() != WL_CONNECTED) {
+  bool ok = connectWiFi(WIFI_RECONNECT_TIMEOUT_MS);
+  // Stamped after the attempt, not before it: a full failed pass over the
+  // list already takes far longer than the check interval, so stamping first
+  // would turn "check every 2s" into a continuous back-to-back retry loop
+  // whenever nothing at all is reachable.
+  lastWifiCheck = millis();
+  if (!ok) {
     Serial.println("WiFi: reconnect attempt failed, will retry");
     return;
   }
-  Serial.print("WiFi: reconnected, IP: ");
-  Serial.println(WiFi.localIP());
   // The old UDP socket was bound under the previous association; rebind it
   // too rather than assume it's still good after the interface flapped.
   udp.stop();
   udp.begin(0);
+}
+
+// -- Periodic status line. The boot banner scrolls off the serial monitor
+// within seconds once the knobs start reporting, and what it says is exactly
+// what you need while chasing a network problem: which address this box
+// currently holds (it can change on any reconnect) and its MAC, for a DHCP
+// reservation. Reprinting on an interval is cheaper than building a way to
+// ask for it on demand, and works with any serial monitor.
+//
+// The mask and gateway are here for a specific reason: whether this box and
+// the Pi are actually on the same segment is answerable from either end, and
+// reading the mask off the sender is the half that doesn't need an ssh
+// session -- matching first three octets prove nothing on their own.
+const unsigned long STATUS_INTERVAL_MS = 10000;
+unsigned long lastStatus = 0;
+
+void printStatus() {
+  bool up = WiFi.status() == WL_CONNECTED;
+  Serial.print("STATUS  link=");
+  Serial.print(up ? "up" : "DOWN");
+  Serial.print("  ssid=");
+  Serial.print(up ? WiFi.SSID() : String("-"));
+  Serial.print("  ip=");
+  Serial.print(WiFi.localIP());
+  Serial.print("  mask=");
+  Serial.print(WiFi.subnetMask());
+  Serial.print("  gw=");
+  Serial.print(WiFi.gatewayIP());
+  Serial.print("  mac=");
+  Serial.print(staMacAddress());
+  Serial.print("  rssi=");
+  Serial.print(WiFi.RSSI());
+  Serial.print("dBm  sending_to=239.192.1.1");
+#ifdef KUTTA_UNICAST_IP
+  if (unicastOk) {
+    Serial.print("+");
+    Serial.print(kuttaUnicastAddr);
+  }
+#endif
+  Serial.print(":9000  up=");
+  Serial.print(millis() / 1000);
+  Serial.println("s");
 }
 
 bool debouncedPress(ModulinoKnob &knob, Debounce &db) {
@@ -253,6 +444,11 @@ bool debouncedPress(ModulinoKnob &knob, Debounce &db) {
 
 void loop() {
   ensureWiFiConnected();
+
+  if (millis() - lastStatus >= STATUS_INTERVAL_MS) {
+    lastStatus = millis();
+    printStatus();
+  }
 
   int16_t rawSpeed = knobSpeed.get();
   int16_t rawAoa = knobAoa.get();
@@ -355,9 +551,23 @@ void sendMessage(const char *channel, float value) {
 }
 
 void sendRaw(const char *line) {
-  udp.beginPacket(KUTTA_MULTICAST_ADDR, KUTTA_PORT);
+  sendTo(KUTTA_MULTICAST_ADDR, line);
+#ifdef KUTTA_UNICAST_IP
+  if (unicastOk) sendTo(kuttaUnicastAddr, line);
+#endif
+  // Printed once, not once per destination: the serial log is there to show
+  // what the knobs decided, and duplicating every line would just make a
+  // change look like two changes.
+  Serial.println(line);
+}
+
+// sendTo fires one message at one destination. endPacket()'s failure return
+// stays ignored, matching kutta's fire-and-forget UDP model -- a dropped
+// control message is corrected by the next one, and ensureWiFiConnected() is
+// what handles the case where they're all dropping.
+void sendTo(const IPAddress &dst, const char *line) {
+  udp.beginPacket(dst, KUTTA_PORT);
   udp.print(line);
   udp.print("\n");
   udp.endPacket();
-  Serial.println(line);
 }
