@@ -13,13 +13,14 @@ fi
 
 if [ -d ~/.config/labwc ]; then
 	# labwc (Raspberry Pi OS Bookworm's default compositor) has its own
-	# autostart file and does not reliably run the XDG ~/.config/autostart
-	# convention's lxsession-xdg-autostart step at real boot -- see
-	# labwc-autostart's own comment for how that was confirmed. Installing
-	# the XDG entry too, on top of this, risks two kutta processes racing
-	# for the same UDP port on the rare boot where lxsession-xdg-autostart
-	# does happen to run -- so this is the only autostart path installed
-	# here, not an addition to it.
+	# autostart file, and runs it in addition to /etc/xdg/labwc/autostart --
+	# whose last line is lxsession-xdg-autostart, i.e. the XDG
+	# ~/.config/autostart path runs on every boot, not rarely. Installing
+	# the XDG entry as well would therefore start a second kutta every
+	# time, two of them racing for the same UDP port (observed on the
+	# exhibit Pi: two full simulations at once, and the instance that won
+	# the port was not the one on screen). So this is the only autostart
+	# path installed here, and any stale XDG entry is removed.
 	rm -f ~/.config/autostart/kutta.desktop
 	mkdir -p ~/.config/labwc
 	sed "s|__KUTTA_DIR__|$KUTTA_DIR|g" "$KUTTA_DIR/deploy/pi-autostart/labwc-autostart" \

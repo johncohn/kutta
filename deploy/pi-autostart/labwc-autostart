@@ -2,16 +2,22 @@
 # labwc's own autostart script (~/.config/labwc/autostart), for a Raspberry
 # Pi OS Desktop exhibit build. install.sh writes this instead of a
 # ~/.config/autostart/*.desktop entry on a labwc session (Raspberry Pi OS
-# Bookworm's default compositor): that XDG autostart convention goes through
-# an extra lxsession-xdg-autostart step which, on labwc, did not reliably run
-# at real boot -- confirmed on repeated cold reboots of the actual exhibit
-# Pi: the three lines below (labwc's own system default) came up fine every
-# time, kutta never did without this file. Launching kutta directly here,
-# the same way those three lines already are, is what labwc actually runs
-# reliably.
-/usr/bin/lwrespawn /usr/bin/pcmanfm-pi &
-/usr/bin/lwrespawn /usr/bin/wf-panel-pi &
-/usr/bin/kanshi &
+# Bookworm's default compositor): that XDG convention runs via
+# lxsession-xdg-autostart, which is launched from the *system* autostart
+# (/etc/xdg/labwc/autostart) and did not reliably start kutta at real boot.
+#
+# labwc runs BOTH the system autostart and this user one -- not one instead
+# of the other. An earlier version of this file also listed the system
+# file's three lines (pcmanfm-pi, wf-panel-pi, kanshi), which therefore
+# started a second copy of each. Two kanshi daemons then raced to configure
+# the same output, and kutta, launching a few seconds later, queried a CRTC
+# one of them had just torn down and died on the spot:
+#
+#   X Error of failed request:  BadRRCrtc (invalid Crtc parameter)
+#   Major opcode of failed request:  139 (RANDR)
+#
+# So this file must contain the kutta launch and nothing else; the desktop
+# session is already fully started by the system autostart.
 
 # The short sleep gives WiFi/DHCP a little more time to settle before kutta
 # binds its UDP listener.
