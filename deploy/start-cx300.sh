@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# Launch kutta on a Mac with the CX300 exhibit's tuned settings: the same look
-# the Pi runs, plus the performance flags that were measured (not guessed) to
-# matter, and UDP control so the knob box drives it.
+# Launch the CX300 exhibit: the tuned display settings, the performance flags
+# that were measured (not guessed) to matter, and UDP control so the knob box
+# drives it. Runs unmodified on a Mac or on the exhibit Pi.
 #
 # Every setting below is overridable from the environment, so the common
 # variations need no editing:
 #
-#   KUTTA_UDP=:9000 ./deploy/start-mac.sh        # unicast, for a multicast-less LAN
-#   KUTTA_TPS=60 KUTTA_SUBSTEPS=3 ...            # full fidelity (a Mac can afford it)
-#   KUTTA_KIOSK=0 ./deploy/start-mac.sh          # windowed, for poking at the UI
-#   KUTTA_DEBUG=1 ./deploy/start-mac.sh          # per-second fps/draw timings
+#   KUTTA_UDP=:9000 ./deploy/start-cx300.sh    # unicast, for a multicast-less LAN
+#   KUTTA_TPS=60 KUTTA_SUBSTEPS=3 ...          # full fidelity (a Mac can afford it)
+#   KUTTA_KIOSK=0 ./deploy/start-cx300.sh      # windowed, for poking at the UI
+#   KUTTA_DEBUG=1 ./deploy/start-cx300.sh      # per-second fps/draw timings
 set -euo pipefail
 
 KUTTA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$KUTTA_DIR"
+
+# DISPLAY only means anything on Linux, and is left alone when already set (a
+# desktop login session sets it); :0 is the fallback that makes a bare SSH
+# launch land on the attached screen rather than failing to find one.
+if [ "$(uname -s)" = "Linux" ]; then
+	export DISPLAY="${DISPLAY:-:0}"
+fi
 
 # ---------------------------------------------------------------- settings --
 
